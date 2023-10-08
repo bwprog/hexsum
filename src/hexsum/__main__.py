@@ -1,154 +1,223 @@
 #!/usr/bin/env python3
-"""
-hexsum: a cli tool to use python's hashlib wrapped around OpenSSL to generate
-        any available hash within the lib against any file. This makes use of
-        rich for color, panel, and table output, and typer for CLI arguments.
-TODO: rich spinner while waiting for large files (>200MB)
-TODO: add testing
-"""
+"""hexsum: A cli tool to use python hashlib wrapped around OpenSSL to generate hex sums."""
 
 __author__ = 'Brandon Wells'
-__maintainer__ = 'Brandon Wells'
 __email__ = 'b.w.prog@outlook.com'
 __copyright__ = '© 2023 Brandon Wells'
 __license__ = 'GPL3+'
 __status__ = 'Development'
-__update__ = '2023.02.01'
-__version__ = '0.9.0'
+__update__ = '2023.10.08'
+__version__ = '0.9.2'
 
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Optional
+
+import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.traceback import install
-import typer
-
 
 # rich enhancements: console output | install provides traceback | rich print (rp)
 console = Console()
 install()
-rp = console.print
+rp: Callable[..., None] = console.print
 
 # globally available variables
-ver = f'pyhash {__version__} ({__update__})'
-hash_list = sorted(hashlib.algorithms_guaranteed)
+ver: str = f'hexsum [green]-[/] {__version__} [green]({__update__})[/]'
+hash_list: list[str] = sorted(hashlib.algorithms_guaranteed)
 
 
 # ~~~ #     - typer callback function -
 def callback_version(version: bool) -> None:
     """Print version and exit.
 
-    Args:
-        version (bool): CLI Option to print program version
+    Parameters
+    ----------
+    version : bool
+        CLI option -v/--version to print program version
 
-    Raises:
-        typer.Exit: normal cleanup exit after completing request
+    Raises
+    ------
+    typer.Exit
+        normal cleanup and exit after completing request
     """
     if version:
-        rp(f'\n{ver}\n', style='bold blue', highlight=False)
-        raise typer.Exit()
+        rp(f'\n{ver}\n', highlight=False)
+        raise typer.Exit
 
 
 # ~~~ #     - typer callback function -
 def callback_available(available: bool) -> None:
     """Derive and print all available hash types.
 
-    Args:
-        available (bool): CLI Option to print all hash types
+    Parameters
+    ----------
+    available : bool
+        CLI Option -a/--available to print all hash types
 
-    Raises:
-        typer.Exit: normal cleanup exit after completing request
+    Raises
+    ------
+    typer.Exit
+        normal cleanup exit after completing request
     """
     if available:
-        rp(f'\n{ver}\n', style='bold blue', highlight=False)
+        rp(f'\n{ver}\n', highlight=False)
         hash_table = Table(title='Available Hashes')
-        hash_table.add_column('Hash', justify='right', style='#cb4b16', no_wrap=True)
-        hash_table.add_column('Block Size', justify='right', style='green', no_wrap=True)
-        hash_table.add_column('Digest Length', justify='right', style='green', no_wrap=True)
-        hash_table.add_column('Hex Length', justify='right', style='green', no_wrap=True)
+        hash_table.add_column(
+            header='Hash',
+            justify='right',
+            style='#cb4b16',
+            no_wrap=True,
+        )
+        hash_table.add_column(
+            header='Block Size',
+            justify='right',
+            style='green',
+            no_wrap=True,
+        )
+        hash_table.add_column(
+            header='Digest Length',
+            justify='right',
+            style='green',
+            no_wrap=True,
+        )
+        hash_table.add_column(
+            header='Hex Length',
+            justify='right',
+            style='green',
+            no_wrap=True,
+        )
         for i in hash_list:
-            if 'shake' not in i:
-                hash_table.add_row(i, str(getattr(hashlib, i)().block_size),
-                                   str(getattr(hashlib, i)().digest_size),
-                                   str(2 * getattr(hashlib, i)().digest_size))
-            else:
-                hash_table.add_row(i, str(getattr(hashlib, i)().block_size),
-                                   '32 (or -l)', '64 (or 2 * -l)')
+            match i:
+                case 'shake':
+                    hash_table.add_row(
+                        i,
+                        str(getattr(hashlib, i)().block_size),
+                        '32 (or -l)',
+                        '64 (or 2 * -l)',
+                    )
+                case _:
+                    hash_table.add_row(
+                        i,
+                        str(getattr(hashlib, i)().block_size),
+                        str(getattr(hashlib, i)().digest_size),
+                        str(2 * getattr(hashlib, i)().digest_size),
+                    )
+
         rp(hash_table)
-        raise typer.Exit()
+        raise typer.Exit
 
 
 # ~~~ #     - typer callback function -
 def callback_length(length: int) -> int:
-    """A typer callback to validate the length CLI Option.
+    """Validate the CLI length Option.
 
-    Args:
-        length (int): the CLI specified Option
+    Parameters
+    ----------
+    length : int
+        CLI Option -l/--length to use with shake hash
 
-    Raises:
-        typer.Exit: invalid CLI Option value for length
+    Returns
+    -------
+    int
+        the same length as requested
 
-    Returns:
-        int: the same length as requested
+    Raises
+    ------
+    typer.Exit
+        invalid CLI Option value for length
     """
-    if length < 1 or length > 128:
-        rp(Panel(f"Option '-l {length}' invalid. Length must be between (and including)"
-                 ' 1 and 128.', title='[bold]Error[/]', title_align='left', border_style='red',
-                 highlight=True))
-        raise typer.Exit()
-    else:
-        return length
+    match length:
+        case length if 1 > length > 128:                                                                # noqa: PLR2004
+            rp(Panel(
+                f'Option "-l {length}" invalid. Length must be between (and including) 1 and 128.',
+                title='[bold]Error[/]',
+                title_align='left',
+                border_style='red',
+                highlight=True,
+                ),
+            )
+            raise typer.Exit
+        case _:
+            return length
 
 
 # ~~~ #     - typer callback function -
-def callback_hash(hash_type: str) -> list:
-    """A typer callback to validate the hash requested and return a list with it.
+def callback_hash(hash_type: str) -> list[str]:
+    """Validate the hash requested and return a list with it.
 
-    Args:
-        hash_type (str): the hash type requested
+    Parameters
+    ----------
+    hash_type : str
+        CLI Option -h/--hash to specify the hash type to run (or all)
 
-    Raises:
-        typer.Exit: Invalid CLI Option value for hash type
+    Returns
+    -------
+    list
+        a list containing all requested hash types to run
 
-    Returns:
-        list: a list containing all requested hash types to run
+    Raises
+    ------
+    typer.Exit
+        Invalid CLI Option value for hash type
     """
-    if hash_type == 'all':
-        return hash_list
-    elif hash_type in hash_list:
-        return [hash_type,]
-    else:
-        rp(Panel(f"Option '-h {hash_type}' invalid. Must be '-h all' or -h {hash_list}.",
-                 title='[bold]Error[/]', title_align='left', border_style='red', highlight=True))
-        raise typer.Exit()
+    match hash_type:
+        case 'all':
+            return hash_list
+        case hash_type if hash_type in hash_list:
+            return [hash_type]
+        case _:
+            rp(Panel(
+                f'Option "-h {hash_type}" invalid. Must be "-h all" or one of -h {hash_list}.',
+                title='[bold]Error[/]',
+                title_align='left',
+                border_style='red',
+                highlight=True,
+                ),
+            )
+            raise typer.Exit
 
 
 # ~~~ #     - typer callback function -
-def callback_compare(compare: str) -> Optional[str]:
-    """Validate the compare CLI number is a valid hexadecimal number.
+def callback_compare(compare: str) -> str | None:
+    """Validate the compare CLI option is a valid hexadecimal number.
 
-    Args:
-        compare (str): the CLI specified hex value
+    Parameters
+    ----------
+    compare : str
+        CLI Option -c/--compare containing the provide hex value
 
-    Raises:
-        typer.Exit: ValueError if the number is invalid
+    Returns
+    -------
+    Optional[str]
+        the compare string if valid
 
-    Returns:
-        str: the compare string if valid
+    Raises
+    ------
+    typer.Exit
+        ValueError if the number is invalid
     """
     if compare:
         try:
-            # do a straight convert of str to int using base 16 (hex)
-            int(compare, 16)
-            return compare
+            # guard against an invalid hex value by ensuring the string entered is valid hex
+            # do a straight convert of str to int using base 16 (hex); don't need value
+            int(compare, base=16)
         except ValueError:
-            rp(Panel(f"'-c {compare}' is an invalid hexadecimal number.", title='[bold]Error[/]',
-                     title_align='left', border_style='red', highlight=True))
-            raise typer.Exit() from ValueError
-    else:
+            rp(Panel(
+                f'"-c {compare}" is an invalid hexadecimal number.',
+                title='[bold]Error[/]',
+                title_align='left',
+                border_style='red',
+                highlight=True,
+                ),
+            )
+            raise typer.Exit from ValueError
+        return compare
+    else:                                                                                               # noqa: RET505
         return None
 
 
@@ -156,18 +225,25 @@ def callback_compare(compare: str) -> Optional[str]:
 def render_hex(hex_dict: dict, hash_value) -> str:
     """Read the file, hash it, and return a hex value.
 
-    Args:
-        hex_dict (dict): main dictionary containing all the variables
-        hash_value (bool): the specific hash type to run for this iteration
+    Parameters
+    ----------
+    hex_dict : dict
+        main dictionary containing all the variables
+    hash_value : bool
+        the specific hash type to run for this iteration
 
-    Raises:
-        typer.Exit: if the file cannot be read (OSError)
+    Returns
+    -------
+    str
+        the hex value of the requested hash type
 
-    Returns:
-        str: the hex value of the requested hash type
+    Raises
+    ------
+    typer.Exit
+        if the file cannot be read (OSError)
     """
     try:
-        with open(hex_dict['file'], 'rb') as f:
+        with Path.open(hex_dict['file'], mode='rb') as f:
             hashed_value = hex_dict['hex_function'][hash_value](f.read())
             if 'shake' in hash_value:
                 return hashed_value.hexdigest(hex_dict['length'])
@@ -175,27 +251,40 @@ def render_hex(hex_dict: dict, hash_value) -> str:
                 return hashed_value.hexdigest()
 
     except OSError as e:
-        rp(Panel(f"cannot read file: {hex_dict['file']}\n{e}.", title='[bold]Error[/]',
-                 title_align='left', border_style='red', highlight=True))
-        raise typer.Exit() from OSError
+        rp(Panel(
+            f'cannot read file: {hex_dict["file"]}\n{e}.',
+            title='[bold]Error[/]',
+            title_align='left',
+            border_style='red',
+            highlight=True,
+            ),
+        )
+        raise typer.Exit from OSError
 
 
 # ~~~ #     - rich print console output -
 def output_final(hex_dict: dict) -> None:
-    """Using rich print and panel to output the hex value(s) in a nice format
+    """Rich print the panel of hex value(s).
 
-    Args:
-        hex_dict (dict): main dictionary containing all the variables
+    Parameters
+    ----------
+    hex_dict : dict
+        main dictionary containing all the variables
 
-    Returns:
-        _type_: None
+    Raises
+    ------
+    typer.Exit
+        cleanly exit the program
     """
-    rp(f'\n{ver}\n', style='bold blue', highlight=False)
+    # Initial output of the program name and version
+    rp(f'\n{ver}\n', highlight=False)
     # uncomment the next line to view all variables for troubleshooting
     # console.log('output_final function', log_locals=True)
 
     # rich panel attributes
-    hex_panel_content, hex_panel_title, hex_panel_border_style = '', '', ''
+    hex_panel_content: str = ''
+    hex_panel_title: str = ''
+    hex_panel_border_style: str = ''
 
     # 3 print options: compare | all | regular
     if hex_dict['compare']:
@@ -233,40 +322,66 @@ def output_final(hex_dict: dict) -> None:
     # rich print and rich panel to display one of the 3 output types
     rp(Panel(hex_panel_content, title=hex_panel_title, title_align='left',
              border_style=hex_panel_border_style, highlight=True))
-    return None
+
+    raise typer.Exit
 
 
 # ~~~ #     - CLI variables are here in main for typer -
 def main(
-    file: Path = typer.Argument(..., exists=True),
-    hash_type_list: Optional[str] = typer.Option(
-        'sha256', '--hash', '-h', callback=callback_hash,
-        help='Hash type to run | use "all" to run all hashes'
-    ),
-    length: Optional[int] = typer.Option(
-        32, '--length', '-l', help='For shake hash [1-128]', callback=callback_length
-    ),
-    compare: Optional[str] = typer.Option(
-        None, '--compare', '-c', help='Compare to hash from source',
-        callback=callback_compare
-    ),
-    available: Optional[bool] = typer.Option(
-        None, '--available', '-a', help='Print all available hash types and exit.',
-        callback=callback_available, is_eager=True
-    ),
-    version: Optional[bool] = typer.Option(
-        None, '--version', '-v', help='Print version and exit.',
-        callback=callback_version, is_eager=True
-    )
+        file: Annotated[Path, typer.Argument(
+            ...,
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help='The file to generate hexsum for',
+        )],
+        hash_type_list: Annotated[str, typer.Option(
+            '--hash',
+            '-h',
+            callback=callback_hash,
+            help='Hash type to run | --hash all  will run all hashes | --hash all  cannot be combined with --compare',
+        )] = 'sha256',
+        length: Annotated[int, typer.Option(
+            '--length',
+            '-l',
+             callback=callback_length,
+            help='For shake hash [1-128]',
+        )] = 32,
+        compare: Annotated[Optional[str] | None, typer.Option(                                          # noqa: UP007
+            '--compare',
+            '-c',
+            callback=callback_compare,
+            help='Compare to hash from source | cannot be combined with --hash all',
+        )] = None,
+        available: Annotated[Optional[bool] | None, typer.Option(                                       # noqa: UP007
+            '--available',
+            '-a',
+            is_eager=True,
+            callback=callback_available,
+            help='Print all available hash types and exit.',
+        )] = None,
+        version: Annotated[Optional[bool] | None, typer.Option(                                         # noqa: UP007
+            '--version',
+            '-v',
+            is_eager=True,
+            callback=callback_version,
+            help='Print version and exit.',
+        )] = None,
 ) -> None:
-    """
-    Calculate hash codes for files.
-    """
+    """Calculate hexsum hash codes for files."""
     # guard against mutually exclusive "-h all" and "-c <hex value>"
     if compare and len(hash_type_list) > 1:
-        rp(Panel("cannot combine '-c' and '-h all'.", title='[bold]Error[/]',
-                 title_align='left', border_style='red', highlight=True))
-        raise typer.Exit()
+        rp(Panel(
+            "cannot combine '-c' and '-h all'.",
+            title='[bold]Error[/]',
+            title_align='left',
+            border_style='red',
+            highlight=True,
+            ),
+        )
+        raise typer.Exit
 
     # create hashing and hex dictionary
     hex_dict = {
@@ -289,7 +404,7 @@ def main(
 
 
 # ~~~ #
-if __name__ == "__main__":
+if __name__ == '__main__':
 
     # use typer to build cli arguments off main variables
     typer.run(main)

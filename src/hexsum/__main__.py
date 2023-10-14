@@ -11,8 +11,8 @@ __email__ = 'b.w.prog@outlook.com'
 __copyright__ = '© 2023 Brandon Wells'
 __license__ = 'GPL3+'
 __status__ = 'Development'
-__update__ = '2023.10.08'
-__version__ = '0.9.4'
+__update__ = '2023.10.14'
+__version__ = '0.9.5'
 
 
 import hashlib
@@ -21,7 +21,9 @@ from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Any, Optional
 
+import blake3  # type: ignore noqa: PGH003
 import typer
+import xxhash
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -39,7 +41,8 @@ rp: Callable[..., None] = console.print
 # globally available variables
 ver: str = f'hexsum [green]-[/] {__version__} [green]({__update__})[/]'
 hash_list: list[str] = sorted(hashlib.algorithms_guaranteed)
-
+xxhash_list: list[str] = sorted(xxhash.algorithms_available)
+blake3_list: list[str] = ['blake3']
 
 # ~~~ #     - typer callback function -
 def callback_version(
@@ -111,18 +114,30 @@ def callback_available(
                 case i if 'shake' in i:
                     hash_table.add_row(
                         i,
-                        str(getattr(hashlib, i)().block_size),
+                        str(object=getattr(hashlib, i)().block_size),
                         '32 (or [-l (int)])',
                         '64 (or 2 * [-l (int)])',
                     )
                 case _:
                     hash_table.add_row(
                         i,
-                        str(getattr(hashlib, i)().block_size),
-                        str(getattr(hashlib, i)().digest_size),
-                        str(2 * getattr(hashlib, i)().digest_size),
+                        str(object=getattr(hashlib, i)().block_size),
+                        str(object=getattr(hashlib, i)().digest_size),
+                        str(object=2 * getattr(hashlib, i)().digest_size),
                     )
-
+        for i in xxhash_list:
+            hash_table.add_row(
+                i,
+                str(object=getattr(xxhash, i)().block_size),
+                str(object=getattr(xxhash, i)().digest_size),
+                str(object=2 * getattr(xxhash, i)().digest_size),
+            )
+        hash_table.add_row(
+            'blake3',
+            str(object=blake3.blake3().block_size),                                         # type: ignore noqa: PGH003
+            str(object=blake3.blake3().digest_size),                                        # type: ignore noqa: PGH003
+            str(object=2 * blake3.blake3().digest_size),                                    # type: ignore noqa: PGH003
+        )
         rp(hash_table)
         raise typer.Exit
 
@@ -186,8 +201,12 @@ def callback_hash(
     """
     match hash_type:
         case 'all':
-            return hash_list
+            return [*hash_list, *xxhash_list, *blake3_list]
         case hash_type if hash_type in hash_list:
+            return [hash_type]
+        case hash_type if hash_type in xxhash_list:
+            return [hash_type]
+        case hash_type if hash_type in blake3_list:
             return [hash_type]
         case _:
             rp(Panel(
@@ -269,9 +288,16 @@ def render_hex(
     typer.Exit
         if the file cannot be read (OSError)
     """
+    ht_base: Any = ''
+    if hash_type in hash_list:
+        ht_base = hashlib
+    elif hash_type in xxhash_list:
+        ht_base = xxhash
+    elif hash_type in blake3_list:
+        ht_base = blake3
     try:
         with Path.open(file, mode='rb') as f:
-            hashed_value: Any = getattr(hashlib, hash_type)(f.read())
+            hashed_value: Any = getattr(ht_base, hash_type)(f.read())
             match hash_type:
                 case hash_type if 'shake' in hash_type:
                     return hashed_value.hexdigest(length)                                       # type: ignore PGH003
@@ -334,7 +360,7 @@ def output_final(
     )
     hex_table.add_column(
         header='Hex Value',
-        justify='center',
+        justify='left',
         style='bold white',
         no_wrap=False,
         overflow='fold',
@@ -448,8 +474,12 @@ def main(
 
     # exit the app
     prog_time_total: float = perf_counter() - PROG_TIME_START
-    rp(Panel(f':glowing_star: Complete :glowing_star: ([green]{prog_time_total:.4f}[/]s)',
-             border_style='green'), highlight=False)
+    rp(Panel(
+        f':glowing_star: Complete :glowing_star: ([green]{prog_time_total:.4f}[/]s)',
+        border_style='green',
+        highlight=False,
+        ),
+    )
     raise typer.Exit
 
 

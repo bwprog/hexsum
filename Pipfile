@@ -6,6 +6,8 @@ name = "pypi"
 [packages]
 rich = "*"
 typer = "*"
+xxhash = "*"
+blake3 = "*"
 
 [dev-packages]
 pytest = "*"

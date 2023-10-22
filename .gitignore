@@ -133,3 +133,6 @@ dmypy.json
 
 # IDE settings
 .vscode
+
+# research folder to hold large testing files to hash
+data

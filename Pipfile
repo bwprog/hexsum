@@ -12,6 +12,7 @@ blake3 = "*"
 [dev-packages]
 pytest = "*"
 ruff = "*"
+flit = "*"
 
 [requires]
 python_version = "3.11"

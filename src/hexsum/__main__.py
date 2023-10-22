@@ -1,181 +1,108 @@
 #!/usr/bin/env python3
-"""hexsum: A cli tool to use python hashlib wrapped around OpenSSL to generate hex sums.
+"""hexsum: a python checksum tool using OpenSSL, xxhash, and blake3.
 
-TODO: Guard against memory consumption by cycling through file read and hex update.
 TODO: Add rich progress for file read and hex updates.
 TODO: add file size to the output.
+TODO: --gnu/--tag
+TODO: add length key to blake3 output like shake
+TODO: -v read xattr
+TODO: -V write xattr
+TODO: -Z write checksum file
+TODO: -C try to compare against any checksum generated
+TODO: --zzz non-rich, traditional output format
+TODO: -c read checksum files
+TODO: * glob a directory for checksums on files
+TODO: -z output
+TODO: --ignore-missing
+TODO: --quiet
+TODO: --status
+TODO: --strict
+TODO: -w
+TODO: possibly add a recursive option with *
+TODO: code refactor: all lists into one dict? Pre-build sections into the dict
+TODO: code refactor: run all hashes against each processed file chunk so file only read once
+TODO: add file read timing
+TODO: add individual hex timing
+TODO: possibly make a namedtuple class for hash attributes that then get added to main dict
+TODO: help cleanup alter <HASH>es into something else; mayber remove " from "-c" switches since auto-colored
 """
-
-__author__ = 'Brandon Wells'
-__email__ = 'b.w.prog@outlook.com'
-__copyright__ = '© 2023 Brandon Wells'
-__license__ = 'GPL3+'
-__status__ = 'Development'
-__update__ = '2023.10.14'
-__version__ = '0.9.5'
 
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Any, Optional
 
+import _file_safely
+import _printables
 import blake3  # type: ignore noqa: PGH003
 import typer
 import xxhash
-from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
-from rich.traceback import install
 
 # constant for tracking program duration
 PROG_TIME_START: float = perf_counter()
+READ_FILE_CHUNKS: int = 1_048_576
 
 
-# rich enhancements: console output | install provides traceback | rich print (rp)
-console = Console()
-install()
-rp: Callable[..., None] = console.print
+app: Callable[..., None] = typer.Typer(
+    rich_markup_mode='rich',
+    add_completion=False,
+)
 
 # globally available variables
-ver: str = f'hexsum [green]-[/] {__version__} [green]({__update__})[/]'
 hash_list: list[str] = sorted(hashlib.algorithms_guaranteed)
 xxhash_list: list[str] = sorted(xxhash.algorithms_available)
 blake3_list: list[str] = ['blake3']
+all_hash_list: list[str] = sorted([*hash_list, *xxhash_list, *blake3_list])
+
 
 # ~~~ #     - typer callback function -
-def callback_version(
-        version: bool,
-) -> None:
+def callback_ver(ver: bool | None) -> None:
     """Print version and exit.
 
     Parameters
     ----------
-    version : bool
-        CLI option -v/--version to print program version
+    ver : bool | None
+        CLI --version option
 
     Raises
     ------
     typer.Exit
-        normal cleanup and exit after completing request
+        cleanly exit program
     """
-    if version:
-        rp(f'\n{ver}\n', highlight=False)
+    if ver:
+        _printables.rich_print_version(command='hexsum')
         raise typer.Exit
 
 
 # ~~~ #     - typer callback function -
 def callback_available(
-        available: bool,
+        available: bool | None,
 ) -> None:
     """Derive and print all available hash types.
 
     Parameters
     ----------
     available : bool
-        CLI Option -a/--available to print all hash types
+        CLI Option -a to print all hash types
 
     Raises
     ------
     typer.Exit
-        normal cleanup exit after completing request
+        cleanly exit program
     """
     if available:
-        rp(f'\n{ver}\n', highlight=False)
-        hash_table = Table(title='Available Hashes')
-        hash_table.add_column(
-            header='Hash',
-            justify='right',
-            style='blue',
-            no_wrap=True,
-        )
-        hash_table.add_column(
-            header='Block Size',
-            justify='right',
-            style='green',
-            no_wrap=True,
-        )
-        hash_table.add_column(
-            header='Digest Length',
-            justify='right',
-            style='green',
-            no_wrap=True,
-        )
-        hash_table.add_column(
-            header='Hex Length',
-            justify='right',
-            style='green',
-            no_wrap=True,
-        )
-        for i in hash_list:
-            match i:
-                # share has a length option that must be segregated out
-                case i if 'shake' in i:
-                    hash_table.add_row(
-                        i,
-                        str(object=getattr(hashlib, i)().block_size),
-                        '32 (or [-l (int)])',
-                        '64 (or 2 * [-l (int)])',
-                    )
-                case _:
-                    hash_table.add_row(
-                        i,
-                        str(object=getattr(hashlib, i)().block_size),
-                        str(object=getattr(hashlib, i)().digest_size),
-                        str(object=2 * getattr(hashlib, i)().digest_size),
-                    )
-        for i in xxhash_list:
-            hash_table.add_row(
-                i,
-                str(object=getattr(xxhash, i)().block_size),
-                str(object=getattr(xxhash, i)().digest_size),
-                str(object=2 * getattr(xxhash, i)().digest_size),
-            )
-        hash_table.add_row(
-            'blake3',
-            str(object=blake3.blake3().block_size),                                         # type: ignore noqa: PGH003
-            str(object=blake3.blake3().digest_size),                                        # type: ignore noqa: PGH003
-            str(object=2 * blake3.blake3().digest_size),                                    # type: ignore noqa: PGH003
-        )
-        rp(hash_table)
+        dicty: dict[str, tuple[int, int]] = {}
+        av_dict: dict[str, str | list[str]] = {
+            'hash_list': hash_list,
+            'xxhash_list': xxhash_list,
+            'blake3_list': blake3_list,
+            'all_hash_list': all_hash_list,
+        }
+        _printables.rich_print_available(av_dict=av_dict)
         raise typer.Exit
-
-
-# ~~~ #     - typer callback function -
-def callback_length(
-        length: int,
-) -> int:
-    """Validate the CLI length Option.
-
-    Parameters
-    ----------
-    length : int
-        CLI Option -l/--length to use with shake hash
-
-    Returns
-    -------
-    int
-        the same length as requested
-
-    Raises
-    ------
-    typer.Exit
-        invalid CLI Option value for length
-    """
-    match length:
-        case length if 1 > length > 128:                                                                # noqa: PLR2004
-            rp(Panel(
-                f'Option "-l {length}" invalid. Length must be between (and including) 1 and 128.',
-                title='[bold]Error[/]',
-                title_align='left',
-                border_style='red',
-                highlight=True,
-                ),
-            )
-            raise typer.Exit
-        case _:
-            return length
 
 
 # ~~~ #     - typer callback function -
@@ -187,37 +114,49 @@ def callback_hash(
     Parameters
     ----------
     hash_type : str
-        CLI Option -h/--hash to specify the hash type to run (or all)
+        CLI -h value
 
     Returns
     -------
     list
-        a list containing all requested hash types to run
+        a list containing all valid requested hash types to run
 
     Raises
     ------
     typer.Exit
-        Invalid CLI Option value for hash type
+        if no valid hashes to run
     """
-    match hash_type:
-        case 'all':
-            return [*hash_list, *xxhash_list, *blake3_list]
-        case hash_type if hash_type in hash_list:
-            return [hash_type]
-        case hash_type if hash_type in xxhash_list:
-            return [hash_type]
-        case hash_type if hash_type in blake3_list:
-            return [hash_type]
-        case _:
-            rp(Panel(
-                f'Option "-h {hash_type}" invalid. Must be "-h all" or one of -h {hash_list}.',
-                title='[bold]Error[/]',
-                title_align='left',
-                border_style='red',
-                highlight=True,
-                ),
-            )
-            raise typer.Exit
+    # split the string into list entries
+    temp_hash_list:list[str] = hash_type.split(sep=',')
+    return_hash_list: list[str] = []
+    bad_hash_list: list[str] = []
+
+    # valid hashes into return list, invalid into bad list
+    for hash_option in temp_hash_list:
+        match hash_option:
+            case 'all':
+                return all_hash_list
+            case hash_option if hash_option in all_hash_list:
+                return_hash_list.append(hash_option)
+            case _:
+                bad_hash_list.append(hash_option)
+
+    # warn if there are bad hashes but don't exit yet
+    if len(bad_hash_list) > 0:
+        _printables.rp(Panel(
+            f'Option "-h {bad_hash_list}" invalid. Must be "-h all" or one or more of {all_hash_list}.',
+            title='[bold]Error[/]',
+            title_align='left',
+            border_style='red',
+            highlight=True,
+            ),
+        )
+    # exit only if no good hashes to check
+    if len(return_hash_list) == 0:
+        raise typer.Exit
+
+    return return_hash_list
+
 
 
 # ~~~ #     - typer callback function -
@@ -229,7 +168,7 @@ def callback_compare(
     Parameters
     ----------
     compare : str
-        CLI Option -c/--compare containing the provide hex value
+        CLI Option -c containing the provide hex value
 
     Returns
     -------
@@ -247,7 +186,7 @@ def callback_compare(
             # do a straight convert of str to int using base 16 (hex); don't need value
             int(compare, base=16)
         except ValueError:
-            rp(Panel(
+            _printables.rp(Panel(
                 f'"-c {compare}" is an invalid hexadecimal number.',
                 title='[bold]Error[/]',
                 title_align='left',
@@ -265,7 +204,7 @@ def callback_compare(
 def render_hex(
         hash_type: str,
         file: Path,
-        length: int,
+        shake_size: int,
 ) -> str:
     """Read the file, hash it, and return a hex value.
 
@@ -275,8 +214,8 @@ def render_hex(
         the specific hash type to run for this iteration
     file : Path
         the file to hash
-    length : int | None
-        the length as an int to use if the hash type is shake
+    shake_size : int | None
+        the size as an int to use if the hash type is shake
 
     Returns
     -------
@@ -295,162 +234,168 @@ def render_hex(
         ht_base = xxhash
     elif hash_type in blake3_list:
         ht_base = blake3
-    try:
-        with Path.open(file, mode='rb') as f:
-            hashed_value: Any = getattr(ht_base, hash_type)(f.read())
-            match hash_type:
-                case hash_type if 'shake' in hash_type:
-                    return hashed_value.hexdigest(length)                                       # type: ignore PGH003
-                case _:
-                    return hashed_value.hexdigest()
 
-    except OSError as e:
-        rp(Panel(
-            f'cannot read file: {file}\n{e}.',
-            title='[bold]Error[/]',
-            title_align='left',
-            border_style='red',
-            highlight=True,
-            ),
-        )
-        raise typer.Exit from OSError
-
-
-# ~~~ #     - rich print console output -
-def output_final(
-        compare: str | None,
-        file: Path,
-        hash_type_list: list[str],
-        hex_values: dict[str, str],
-        length: int,
-) -> None:
-    """Rich print the panel of hex value(s).
-
-    Parameters
-    ----------
-    compare : str | None
-        the optional cli --compare/-c hex value to compare to
-    file : Path
-        the file name that was hashed in Path object format
-    hash_type_list : list[str]
-        list of hashes to derive values for
-    hex_values : dict[str, str]
-        the derived hex values with k = hash name and v = hex value
-    length : int
-        length to use for shake hashes
-
-    Raises
-    ------
-    typer.Exit
-        cleanly exit the program
-    """
-    # Initial output of the program name and version
-    rp(f'\n{ver}\n', highlight=False)
-
-    # uncomment the next line to view all variables for troubleshooting
-    # console.log('output_final function', log_locals=True)
-
-    # build hex table for final output
-    hex_table = Table(title=f'Hex Value(s) for [green]{file}[/]')
-    hex_table.add_column(
-        header='Hash',
-        justify='center',
-        style='blue',
-        no_wrap=True,
+    incremental_file_bytes: Generator[bytes, Any, None] = _file_safely.read_file_in_chunks(
+        file_path=file,
+        read_size=READ_FILE_CHUNKS,
     )
-    hex_table.add_column(
-        header='Hex Value',
-        justify='left',
-        style='bold white',
-        no_wrap=False,
-        overflow='fold',
-    )
+    hlib_temp = getattr(ht_base, hash_type)()
+    for file_chunk in incremental_file_bytes:
+        hlib_temp.update(file_chunk)
 
-    if compare:
-        hex_table.add_column(
-            header='Origin',
-            justify='center',
-            style='blue',
-            no_wrap=True,
-        )
-        # short name for hash type
-        h: str = hash_type_list[0]
-        # short printable hash name including the shake length if applicable
-        d: str = f'{h}({length})' if 'shake' in h else h
-        hex_table.add_row(
-            d,
-            hex_values[h],
-            'Generated',
-        )
-        hex_table.add_row(
-            d,
-            compare,
-            'Provided',
-        )
-        if compare == hex_values[h]:
-            hex_table.title = f'[bold]{d}[green] Hex Value for {file} MATCHES![/]'
-        else:
-            hex_table.title = f'[bold]{d}[red] Hex Value for {file} DOES NOT MATCH!!![/]'
-    else:
-        for k, v in hex_values.items():
-            d: str = f'{k}({length})' if 'shake' in k else k
-            hex_table.add_row(
-                d,
-                v,
-            )
-
-    # rich print and rich panel to display one of the 3 output types
-    rp(hex_table)
+    match hash_type:
+        case hash_type if 'shake' in hash_type:
+            return hlib_temp.hexdigest(shake_size)
+        case 'blake3':
+            return hlib_temp.hexdigest(length=shake_size)
+        case _:
+            return hlib_temp.hexdigest()
 
 
 # ~~~ #     - CLI variables are here in main for typer -
+@app.command(rich_help_panel='Standard Options')
 def main(
         file: Annotated[Path, typer.Argument(
-            ...,
+            default=...,
             exists=True,
             file_okay=True,
             dir_okay=False,
             readable=True,
             resolve_path=True,
-            help='The file to generate hexsum for',
+            rich_help_panel='[blue]FILE[/]',
+            help='The [blue]FILE[/] to hash, or checksum [blue]FILE[/] to check or validate.',
         )],
-        hash_type_list: Annotated[str, typer.Option(
-            '--hash',
-            '-h',
-            callback=callback_hash,
-            help='Hash type to run | --hash all  will run all hashes | --hash all  cannot be combined with --compare',
-        )] = 'sha256',
-        length: Annotated[int, typer.Option(
-            '--length',
-            '-l',
-             callback=callback_length,
-            help='For shake hash [1-128]',
-        )] = 32,
-        compare: Annotated[Optional[str] | None, typer.Option(                                          # noqa: UP007
-            '--compare',
-            '-c',
-            callback=callback_compare,
-            help='Compare to hash from source | cannot be combined with --hash all',
-        )] = None,
-        available: Annotated[Optional[bool] | None, typer.Option(                                       # noqa: UP007
-            '--available',
-            '-a',
+        a_available: Annotated[Optional[bool] | None, typer.Option(                                       # noqa: UP007
+            default='-a',
             is_eager=True,
+            rich_help_panel='Hexsum Options',
             callback=callback_available,
-            help='Print all available hash types and exit.',
+            help='Print all available <HASH> types and exit.',
         )] = None,
-        version: Annotated[Optional[bool] | None, typer.Option(                                         # noqa: UP007
-            '--version',
-            '-v',
+        c_compare: Annotated[Optional[str] | None, typer.Option(                                          # noqa: UP007
+            default='-C',
+            show_default=False,
+            rich_help_panel='Hexsum Options',
+            callback=callback_compare,
+            help='Compare to provided checksum; use -h <HASH> to match source algorithm; will attempt to compare '
+            'to all with "-h [spring_green3]all[/]"; ex: "-c=bf3ed5f58439bd05"',
+        )] = None,
+        flag_gnu: Annotated[bool, typer.Option(
+            default='--gnu',
+            rich_help_panel='Hexsum Options',
+            help='Traditional GNU checksum output, "<CHECKSUM> [blue]FILE[/]", with no indication of <HASH> algorithm '
+            f'used; use "--zzz" to output this legacy style to console instead of rich {_printables.colorize}d output.',
+        )] = False,
+        h_hashes: Annotated[str, typer.Option(
+            default='-h',
+            rich_help_panel='Hexsum Options',
+            callback=callback_hash,
+            help='<HASH> type to run; "-h=[spring_green3]all[/]" will checksum the [blue]FILE[/] with all <HASH>es; '
+                 'use "-a" to view available <HASH>es; use comma delimination with no space for multiple <HASH>es;'
+                 'ex: "-h=sha256,blake3" will checksum the [blue]FILE[/] with [spring_green3]sha256[/] and '
+                 '[spring_green3]blake3[/].',
+        )] = 'sha256',
+        s_size: Annotated[int, typer.Option(
+            default='-s',
+            min=1,
+            max=128,
+            rich_help_panel='Hexsum Options',
+            help='Use with "-h=[spring_green3]shake_128[/]", "-h=[spring_green3]shake_256[/]", and "-h=[spring_green3]'
+            'blake3[/]"; otherwise ignored.',
+        )] = 32,
+        v_validation_read: Annotated[bool, typer.Option(
+            default='-v',
+            rich_help_panel='Hexsum Options',
+            help='Read xattr for saved checksums and validate against live checksum.',
+        )] = False,
+        v_validation_write: Annotated[bool, typer.Option(
+            default='-V',
+            rich_help_panel='Hexsum Options',
+            help='Write xattr checksums as "user.<HASH>.hash" and "user.<HASH>.date" for future validation.',
+        )] = False,
+        w_write: Annotated[bool, typer.Option(
+            default='-Z',
+            rich_help_panel='Hexsum Options',
+            help='Write checksum file as "CHECKSUM.<HASH>-[blue]FILE[/] in "--tag" (BSD) style [DEFAULT]; or as '
+            '[blue]FILE[/].<HASH> in "--gnu" (GNU) mode.',
+        )] = False,
+        flag_zzz: Annotated[bool, typer.Option(
+            default='--zzz',
+            rich_help_panel='Hexsum Options',
+            help=f'Print to console in non-{_printables.colorize}d, legacy mode; "--tag" (BSD) style by default, '
+            'or "--gnu" (GNU) style.',
+        )] = False,
+        b_binary: Annotated[bool, typer.Option(
+            default='-b',
+            show_default=False,
+            # hidden=True,  # maybe hide this since it is not used but will not throw error since it exists
+            rich_help_panel='Standard Options',
+            help='Read in binary mode; legacy switch, ignored as always read binary.',
+        )] = True,
+        c_check: Annotated[bool, typer.Option(
+            default='-c',
+            rich_help_panel='Standard Options',
+            help='Read checksums from the [blue]FILE[/]s and check them; use "--gnu" to force non-BSD style.',
+        )] = False,
+        t_text: Annotated[bool, typer.Option(
+            default='-t',
+            show_default=False,
+            # hidden=True,  # maybe hide this since it is not used but will not throw error since it exists
+            rich_help_panel='Standard Options',
+            help='Read in text mode; legacy switch, ignored as always read binary ("-b").',
+        )] = False,
+        flag_tag: Annotated[bool, typer.Option(
+            default='--tag',
+            rich_help_panel='Standard Options',
+            help='Create a BSD-style checksum format e.g. "<HASH> ([blue]FILE[/]) = checksum"); use "--zzz" to '
+            f'output this legacy style to console instead of rich {_printables.colorize}d output; use "--gnu" to '
+            'override this and use GNU style output.',
+        )] = True,
+        z_nul: Annotated[bool, typer.Option(
+            default='-z',
+            rich_help_panel='Standard Options',
+            help='End each output line with NUL instead of newline, and disable file name escaping.',
+        )] = False,
+        flag_ignore_missing: Annotated[bool, typer.Option(
+            default='--ignore-missing',
+            rich_help_panel='[cyan]"-c"[/] Validation Options',
+            help='Do not print, report, or exit code fail for missing files.',
+        )] = False,
+        flag_quiet: Annotated[bool, typer.Option(
+            default='--quiet',
+            rich_help_panel='[cyan]"-c"[/] Validation Options',
+            help='Do not print OK for each successfully verified file.',
+        )] = False,
+        flag_status: Annotated[bool, typer.Option(
+            default='--status',
+            rich_help_panel='[cyan]"-c"[/] Validation Options',
+            help='Do not print anything; exit codes shows success.',
+        )] = False,
+        flag_strict: Annotated[bool, typer.Option(
+            default='--strict',
+            rich_help_panel='[cyan]"-c"[/] Validation Options',
+            help='Exit non-zero code for improperly formatted checksum lines.',
+        )] = False,
+        w_warn: Annotated[bool, typer.Option(
+            default='-w',
+            rich_help_panel='[cyan]"-c"[/] Validation Options',
+            help='Warn about improperly formatted checksum lines.',
+        )] = False,
+        flag_version: Annotated[Optional[bool] | None, typer.Option(                                    # noqa: UP007
+            default='--version',
             is_eager=True,
-            callback=callback_version,
+            rich_help_panel='Standard Options',
+            callback=callback_ver,
             help='Print version and exit.',
         )] = None,
 ) -> None:
-    """Calculate hexsum hash codes for files."""
+    """Print or check various <HASH> algorithmic checksums.
+
+    Use "-a" to view available <HASH>es.
+    """
     # guard against mutually exclusive "-h all" and "-c <hex value>"
-    if compare and len(hash_type_list) > 1:
-        rp(Panel(
+    if c_compare and len(h_hashes) > 1:
+        _printables.rp(Panel(
             "cannot combine '-c' and '-h all'.",
             title='[bold]Error[/]',
             title_align='left',
@@ -461,20 +406,20 @@ def main(
         raise typer.Exit
 
     # iterate through requested hash or hashes deriving hex values
-    hex_values: dict[str, str] = {h: render_hex(hash_type=h, file=file, length=length) for h in hash_type_list}
+    hex_values: dict[str, str] = {h: render_hex(hash_type=h, file=file, shake_size=s_size) for h in h_hashes}
 
     # call the fancy output function
-    output_final(
-        compare=compare,
+    _printables.rich_print_final(
+        compare=c_compare,
         file=file,
-        hash_type_list=hash_type_list,                                                          # type: ignore PGH003
+        hash_type_list=h_hashes,                                                                # type: ignore PGH003
         hex_values=hex_values,
-        length=length,
+        length=s_size,
     )
 
     # exit the app
     prog_time_total: float = perf_counter() - PROG_TIME_START
-    rp(Panel(
+    _printables.rp(Panel(
         f':glowing_star: Complete :glowing_star: ([green]{prog_time_total:.4f}[/]s)',
         border_style='green',
         highlight=False,
@@ -487,4 +432,4 @@ def main(
 if __name__ == '__main__':
 
     # use typer to build cli arguments off main variables
-    typer.run(function=main)
+    app()
